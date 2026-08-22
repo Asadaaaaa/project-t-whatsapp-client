@@ -12,16 +12,22 @@ export class SyncService {
       return { success: false, message: 'WhatsApp client is not connected' };
     }
 
+    if (this.isSyncing) {
+      console.log(`[SyncService:${this.clientManager.sessionId}] Sync already running for date ${targetDateStr}, skipping duplicate request`);
+      return { success: true, message: 'Sync already in progress' };
+    }
+
+    this.isSyncing = true;
     const startSeconds = Math.floor(new Date(`${targetDateStr}T00:00:00+07:00`).getTime() / 1000);
     const endSeconds = Math.floor(new Date(`${targetDateStr}T23:59:59.999+07:00`).getTime() / 1000);
 
     try {
-      await this.clientManager.injectFixes();
-      const pupPage = this.clientManager.client.pupPage;
-
-      if (!pupPage) {
+      if (!this.clientManager.client.pupPage || this.clientManager.client.pupPage.isClosed()) {
         return { success: false, message: 'Puppeteer page not available' };
       }
+
+      await this.clientManager.injectFixes();
+      const pupPage = this.clientManager.client.pupPage;
 
       console.log(`[SyncService:${this.clientManager.sessionId}] Deep scanning date ${targetDateStr} (full history & media parsing)...`);
 
@@ -121,10 +127,10 @@ export class SyncService {
               continue;
             }
 
-            // Deep pagination to load all messages back to the target date
+            // Safe pagination to load all messages back to the target date without freezing browser
             try {
               let attempts = 0;
-              while (attempts < 30) {
+              while (attempts < 15) {
                 const currentMsgs = chat.msgs ? (chat.msgs.getModelsArray ? chat.msgs.getModelsArray() : (chat.msgs._models || [])) : [];
                 const oldestMsgTs = currentMsgs.length > 0 ? (currentMsgs[0].t || currentMsgs[0].timestamp || 0) : chatLastActivity;
                 if (oldestMsgTs > 0 && oldestMsgTs <= startSec) {
@@ -142,6 +148,8 @@ export class SyncService {
                   break;
                 }
                 attempts++;
+                // Small yield
+                await new Promise((r) => setTimeout(r, 20));
               }
             } catch (loadErr) {}
 
@@ -232,9 +240,9 @@ export class SyncService {
         }
       }, startSeconds, endSeconds);
 
-      console.log(`[SyncService:${this.clientManager.sessionId}] Scan result: found ${Object.keys(scanResult.data || {}).length} chats (total msgs checked: ${scanResult.totalChecked}). Error: ${scanResult.error}`);
+      console.log(`[SyncService:${this.clientManager.sessionId}] Scan result: found ${Object.keys(scanResult?.data || {}).length} chats (total msgs checked: ${scanResult?.totalChecked || 0}). Error: ${scanResult?.error}`);
 
-      const chatList = Object.values(scanResult.data || {});
+      const chatList = Object.values(scanResult?.data || {});
       let totalSyncedMessages = 0;
 
       if (chatList.length > 0) {
@@ -258,6 +266,8 @@ export class SyncService {
     } catch (err) {
       console.error(`[SyncService:${this.clientManager.sessionId}] Date sync error for ${targetDateStr}:`, err.message);
       return { success: false, error: err.message };
+    } finally {
+      this.isSyncing = false;
     }
   }
 }
