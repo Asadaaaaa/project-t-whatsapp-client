@@ -29,7 +29,14 @@ export class MessageHandler {
       try {
         chat = await msg.getChat();
       } catch (e) {
-        // Fallback to msg.from if getChat() fails
+        // Fallback
+      }
+
+      // Strict filter: Ignore archived and locked chats
+      const isArchived = chat?.archive || chat?.isArchived || chat?.archived;
+      const isLocked = chat?.isLocked || chat?.locked || chat?.isChatLocked || chat?.isLockChat || chat?.isLockedChat || chat?.chatLock?.isLocked || chat?.lock;
+      if (isArchived || isLocked) {
+        return;
       }
 
       const rawChatId = chat?.id?._serialized || chat?.id?.user || msgFrom;

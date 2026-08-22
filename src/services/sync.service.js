@@ -23,7 +23,7 @@ export class SyncService {
         return { success: false, message: 'Puppeteer page not available' };
       }
 
-      console.log(`[SyncService:${this.clientManager.sessionId}] Deep history scan for date ${targetDateStr} (${startSeconds} - ${endSeconds})...`);
+      console.log(`[SyncService:${this.clientManager.sessionId}] Scanning date ${targetDateStr} (ignoring archived & locked chats)...`);
 
       const scanResult = await pupPage.evaluate(async (startSec, endSec) => {
         const results = {};
@@ -35,6 +35,25 @@ export class SyncService {
           if (idObj._serialized) return idObj._serialized;
           if (idObj.user && idObj.server) return `${idObj.user}@${idObj.server}`;
           return String(idObj);
+        };
+
+        const isChatIgnored = (chat) => {
+          if (!chat) return false;
+          // Ignore archived chats
+          if (chat.archive || chat.isArchived || chat.archived) return true;
+          // Ignore locked chats
+          if (
+            chat.isLocked ||
+            chat.locked ||
+            chat.isChatLocked ||
+            chat.isLockChat ||
+            chat.isLockedChat ||
+            chat.chatLock?.isLocked ||
+            chat.lock
+          ) {
+            return true;
+          }
+          return false;
         };
 
         try {
@@ -56,6 +75,11 @@ export class SyncService {
               rawChatId.endsWith('@broadcast') ||
               rawChatId.endsWith('@newsletter')
             ) {
+              continue;
+            }
+
+            // Exclude archived and locked chats
+            if (isChatIgnored(chat)) {
               continue;
             }
 
@@ -134,8 +158,13 @@ export class SyncService {
                 const rawChatId = getChatIdString(m.id?.remote || m.to || m.from);
                 if (!rawChatId || rawChatId === 'status@broadcast' || rawChatId.endsWith('@broadcast') || rawChatId.endsWith('@newsletter')) continue;
 
+                const chatModel = ChatCollection.get(rawChatId);
+                // Exclude archived and locked chats in global scan
+                if (isChatIgnored(chatModel)) {
+                  continue;
+                }
+
                 if (!results[rawChatId]) {
-                  const chatModel = ChatCollection.get(rawChatId);
                   results[rawChatId] = {
                     id: String(rawChatId),
                     whatsapp_chat_id: String(rawChatId),
