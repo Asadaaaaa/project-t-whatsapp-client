@@ -23,7 +23,7 @@ export class SyncService {
         return { success: false, message: 'Puppeteer page not available' };
       }
 
-      console.log(`[SyncService:${this.clientManager.sessionId}] Scanning date ${targetDateStr} (ignoring archived & locked chats)...`);
+      console.log(`[SyncService:${this.clientManager.sessionId}] Deep scanning date ${targetDateStr} (full history & media parsing)...`);
 
       const scanResult = await pupPage.evaluate(async (startSec, endSec) => {
         const results = {};
@@ -54,6 +54,39 @@ export class SyncService {
             return true;
           }
           return false;
+        };
+
+        const formatMessageBody = (m) => {
+          const rawBody = m.body || m.caption || '';
+          const mType = (m.type || 'chat').toLowerCase();
+
+          if (mType === 'image') {
+            return rawBody ? `[Foto/Gambar: "${rawBody}"]` : `[Foto/Gambar dikirim]`;
+          }
+          if (mType === 'ptt') {
+            const dur = m.duration ? ` (${m.duration} detik)` : '';
+            return `[Voice Note / Pesan Suara${dur}]`;
+          }
+          if (mType === 'audio') {
+            return `[Audio / Rekaman Suara]`;
+          }
+          if (mType === 'video') {
+            return rawBody ? `[Video: "${rawBody}"]` : `[Video dikirim]`;
+          }
+          if (mType === 'document') {
+            const fname = m.filename ? `: ${m.filename}` : '';
+            return `[Dokumen/Berkas${fname}]`;
+          }
+          if (mType === 'sticker') {
+            return `[Stiker]`;
+          }
+          if (mType === 'location') {
+            return `[Lokasi dibagikan: ${m.loc || ''}]`;
+          }
+          if (mType === 'vcard' || mType === 'contact') {
+            return `[Kontak WhatsApp dibagikan]`;
+          }
+          return rawBody;
         };
 
         try {
@@ -88,10 +121,10 @@ export class SyncService {
               continue;
             }
 
-            // Load earlier messages if needed
+            // Deep pagination to load all messages back to the target date
             try {
               let attempts = 0;
-              while (attempts < 6) {
+              while (attempts < 30) {
                 const currentMsgs = chat.msgs ? (chat.msgs.getModelsArray ? chat.msgs.getModelsArray() : (chat.msgs._models || [])) : [];
                 const oldestMsgTs = currentMsgs.length > 0 ? (currentMsgs[0].t || currentMsgs[0].timestamp || 0) : chatLastActivity;
                 if (oldestMsgTs > 0 && oldestMsgTs <= startSec) {
@@ -126,7 +159,7 @@ export class SyncService {
                   whatsapp_message_id: strId || String(m.id?.id || ''),
                   sender: m.author || m.from ? getChatIdString(m.author || m.from) : null,
                   receiver: m.to ? getChatIdString(m.to) : null,
-                  body: m.body || m.caption || '',
+                  body: formatMessageBody(m),
                   type: m.type || 'chat',
                   timestamp: ts * 1000,
                   fromMe: !!(m.id?.fromMe || m.fromMe)
@@ -146,7 +179,7 @@ export class SyncService {
             }
           }
 
-          // Also check global MsgCollection
+          // Also check global MsgCollection for any stray messages
           if (MsgCollection) {
             const globalMsgs = MsgCollection.getModelsArray ? MsgCollection.getModelsArray() : [];
             totalChecked += globalMsgs.length;
@@ -183,7 +216,7 @@ export class SyncService {
                     whatsapp_message_id: strId || String(m.id?.id || ''),
                     sender: m.author || m.from ? getChatIdString(m.author || m.from) : null,
                     receiver: m.to ? getChatIdString(m.to) : null,
-                    body: m.body || m.caption || '',
+                    body: formatMessageBody(m),
                     type: m.type || 'chat',
                     timestamp: ts * 1000,
                     fromMe: !!(m.id?.fromMe || m.fromMe)
@@ -215,7 +248,7 @@ export class SyncService {
             sessionId: this.clientManager.sessionId,
             chats: chatList
           },
-          { timeout: 30000 }
+          { timeout: 60000 }
         );
 
         console.log(`[SyncService:${this.clientManager.sessionId}] Successfully posted ${totalSyncedMessages} messages from ${chatList.length} chats to Main API.`);
