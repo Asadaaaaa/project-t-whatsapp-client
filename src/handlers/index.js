@@ -1,1 +1,1 @@
-export { default as MessageHandler } from './Message.handler.js';
+export { default as MessageHandler } from './message.handler.js';
