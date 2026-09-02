@@ -1,19 +1,20 @@
-import axios from 'axios';
+import { LoggerHelper as sendLogs } from '#helpers';
 
 export class SyncService {
   constructor(clientManager) {
     this.clientManager = clientManager;
+    this.sendLogs = sendLogs;
     this.isSyncing = false;
   }
 
   async syncDateRange(targetDateStr) {
     if (!this.clientManager.client || this.clientManager.status !== 'connected') {
-      console.log(`[SyncService:${this.clientManager.sessionId}] Cannot sync date: client not connected (status: ${this.clientManager.status})`);
+      this.sendLogs(`[SyncService:${this.clientManager.sessionId}] Cannot sync date: client not connected (status: ${this.clientManager.status})`);
       return { success: false, message: 'WhatsApp client is not connected' };
     }
 
     if (this.isSyncing) {
-      console.log(`[SyncService:${this.clientManager.sessionId}] Sync already running for date ${targetDateStr}, skipping duplicate request`);
+      this.sendLogs(`[SyncService:${this.clientManager.sessionId}] Sync already running for date ${targetDateStr}, skipping duplicate request`);
       return { success: true, message: 'Sync already in progress' };
     }
 
@@ -29,7 +30,7 @@ export class SyncService {
       await this.clientManager.injectFixes();
       const pupPage = this.clientManager.client.pupPage;
 
-      console.log(`[SyncService:${this.clientManager.sessionId}] Deep scanning date ${targetDateStr} (full history & media parsing)...`);
+      this.sendLogs(`[SyncService:${this.clientManager.sessionId}] Deep scanning date ${targetDateStr} (full history & media parsing)...`);
 
       const scanResult = await pupPage.evaluate(async (startSec, endSec) => {
         const results = {};
@@ -240,7 +241,7 @@ export class SyncService {
         }
       }, startSeconds, endSeconds);
 
-      console.log(`[SyncService:${this.clientManager.sessionId}] Scan result: found ${Object.keys(scanResult?.data || {}).length} chats (total msgs checked: ${scanResult?.totalChecked || 0}). Error: ${scanResult?.error}`);
+      this.sendLogs(`[SyncService:${this.clientManager.sessionId}] Scan result: found ${Object.keys(scanResult?.data || {}).length} chats (total msgs checked: ${scanResult?.totalChecked || 0}). Error: ${scanResult?.error}`);
 
       const chatList = Object.values(scanResult?.data || {});
       let totalSyncedMessages = 0;
@@ -250,24 +251,25 @@ export class SyncService {
           totalSyncedMessages += c.messages.length;
         }
 
-        await axios.post(
-          `${this.clientManager.mainApiUrl}/api/whatsapp/internal/sync-batch`,
-          {
+        const socketClient = this.clientManager.manager?.app?.socketClient;
+        if (socketClient) {
+          await socketClient.emitSyncBatch({
             sessionId: this.clientManager.sessionId,
             chats: chatList
-          },
-          { timeout: 60000 }
-        );
+          });
+        }
 
-        console.log(`[SyncService:${this.clientManager.sessionId}] Successfully posted ${totalSyncedMessages} messages from ${chatList.length} chats to Main API.`);
+        this.sendLogs(`[SyncService:${this.clientManager.sessionId}] Successfully dispatched ${totalSyncedMessages} messages from ${chatList.length} chats via Socket.IO.`);
       }
 
       return { success: true, count: totalSyncedMessages, chatsCount: chatList.length };
     } catch (err) {
-      console.error(`[SyncService:${this.clientManager.sessionId}] Date sync error for ${targetDateStr}:`, err.message);
+      this.sendLogs(`[SyncService:${this.clientManager.sessionId}] Date sync error for ${targetDateStr}: ${err.message}`);
       return { success: false, error: err.message };
     } finally {
       this.isSyncing = false;
     }
   }
 }
+
+export default SyncService;

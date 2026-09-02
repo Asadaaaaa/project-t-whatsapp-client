@@ -1,8 +1,9 @@
-import axios from 'axios';
+import { LoggerHelper as sendLogs } from '#helpers';
 
 export class MessageHandler {
-  constructor(clientManager) {
-    this.clientManager = clientManager;
+  constructor(singleClient) {
+    this.singleClient = singleClient;
+    this.sendLogs = sendLogs;
   }
 
   async handle(msg) {
@@ -45,7 +46,7 @@ export class MessageHandler {
       }
 
       const payload = {
-        sessionId: this.clientManager.sessionId,
+        sessionId: this.singleClient.sessionId,
         chat: {
           id: String(rawChatId),
           whatsapp_chat_id: String(rawChatId),
@@ -65,11 +66,14 @@ export class MessageHandler {
         }
       };
 
-      await axios.post(`${this.clientManager.mainApiUrl}/api/whatsapp/internal/incoming-message`, payload, {
-        timeout: 10000
-      });
+      const socketClient = this.singleClient.manager?.app?.socketClient;
+      if (socketClient) {
+        await socketClient.emitIncomingMessage(payload);
+      }
     } catch (err) {
-      console.error('[MessageHandler] Failed to forward incoming message to Main API:', err?.message || err);
+      this.sendLogs(`[MessageHandler] Error handling message: ${err?.message || err}`);
     }
   }
 }
+
+export default MessageHandler;
