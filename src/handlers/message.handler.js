@@ -45,14 +45,21 @@ export class MessageHandler {
         return;
       }
 
+      const isCommunity = !!(chat?.isParentGroup || chat?.groupMetadata?.isParentGroup || chat?.isAnnouncementGroup);
+      const isGroup = !!(chat?.isGroup || isCommunity);
+      let chatName = chat?.name || chat?.formattedTitle;
+      if (!chatName) {
+        chatName = isCommunity ? 'Community Group' : (isGroup ? 'Group Chat' : 'Direct Chat');
+      }
+
       const payload = {
         sessionId: this.singleClient.sessionId,
         chat: {
           id: String(rawChatId),
           whatsapp_chat_id: String(rawChatId),
-          name: chat?.name || chat?.formattedTitle || 'Unknown',
-          isGroup: !!chat?.isGroup,
-          phoneNumber: chat?.isGroup ? null : (chat?.id?.user || null)
+          name: chatName,
+          isGroup: isGroup,
+          phoneNumber: isGroup ? null : (chat?.id?.user || null)
         },
         message: {
           id: String(rawMsgId),
