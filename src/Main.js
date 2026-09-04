@@ -95,7 +95,7 @@ class WorkerApp {
       });
     });
 
-    app.get('/rescan', async (req, res) => {
+    app.get(['/scan', '/rescan'], async (req, res) => {
       try {
         for (const client of this.manager.clients.values()) {
           if (client.messageHandler?.reimbursementTester) {
