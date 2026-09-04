@@ -202,6 +202,11 @@ export class ReimbursementTestHandler {
       this.sendLogs(`[ReimbursementTest] 🎉 Download media kedua gambar berhasil! Mengirimkan ke Controller...`);
 
       // Kirim data lengkap ke Controller API via Socket.IO untuk disimpan & dianalisis Gemini AI
+      // Dapatkan identitas pengirim (nama kontak buku telepon / pushname & nomor telepon)
+      const { senderPhone, senderName } = await this.resolveSenderInfo(msg, chat);
+      this.sendLogs(`[ReimbursementTest] 👤 Pengirim teridentifikasi: "${senderName}" (${senderPhone})`);
+
+      // Kirim data lengkap ke Controller API via Socket.IO untuk disimpan & dianalisis Gemini AI
       try {
         const socketClient = this.singleClient.manager?.app?.socketClient;
         if (socketClient) {
@@ -210,8 +215,8 @@ export class ReimbursementTestHandler {
             quoted_message_id: quotedId,
             chat_id: chatId,
             chat_name: chatTitle,
-            sender_phone: msg.fromMe ? (this.singleClient.clientInfo?.wid?.user || null) : (msg.author || msg.from),
-            sender_name: msg.author || msg.from || (msg.fromMe ? 'Saya' : 'Unknown'),
+            sender_phone: senderPhone,
+            sender_name: senderName,
             reimburse_image_base64: mainMedia.data,
             reimburse_mime: mainMedia?.mimetype || 'image/jpeg',
             receipt_image_base64: quotedMedia.data,
@@ -746,6 +751,107 @@ export class ReimbursementTestHandler {
     };
 
     return report;
+  }
+
+  /**
+   * Mengambil identitas pengirim (nama kontak buku telepon / pushname & nomor telepon) seakurat mungkin
+   */
+  async resolveSenderInfo(msg, chat) {
+    let senderPhone = null;
+    let senderName = null;
+
+    // 1. Jika pesan dikirim oleh diri sendiri (fromMe)
+    if (msg.fromMe) {
+      senderPhone = this.singleClient.clientInfo?.wid?.user || this.singleClient.client?.info?.wid?.user || null;
+      const myPush = this.singleClient.clientInfo?.pushname || this.singleClient.client?.info?.pushname;
+      senderName = myPush ? `Saya (${myPush})` : 'Saya';
+      return { senderPhone, senderName };
+    }
+
+    // 2. Coba getContact bawaan whatsapp-web.js
+    let contact = null;
+    try {
+      if (typeof msg.getContact === 'function') {
+        contact = await msg.getContact();
+      }
+    } catch (e) {}
+
+    if (contact) {
+      // Prioritas 1: Nama yang disimpan di kontak buku telepon (contact.name)
+      if (contact.name && typeof contact.name === 'string' && contact.name.trim()) {
+        senderName = contact.name.trim();
+      } else if (contact.shortName && typeof contact.shortName === 'string' && contact.shortName.trim()) {
+        senderName = contact.shortName.trim();
+      } else if (contact.pushname && typeof contact.pushname === 'string' && contact.pushname.trim()) {
+        // Prioritas 2: Pushname publik WhatsApp
+        senderName = contact.pushname.trim();
+      }
+
+      if (contact.number) {
+        senderPhone = String(contact.number);
+      }
+    }
+
+    // 3. Cek notifyName dari payload _data pesan
+    if (!senderName && msg._data?.notifyName) {
+      senderName = String(msg._data.notifyName).trim();
+    }
+
+    // 4. Jika di direct chat (bukan grup), gunakan nama chat sebagai nama kontak
+    const isGroup = Boolean(chat?.isGroup || chat?.id?._serialized?.endsWith('@g.us'));
+    if (!senderName && !isGroup && chat) {
+      const chatTitle = chat.name || chat.formattedTitle;
+      if (chatTitle && !chatTitle.includes('@lid') && !chatTitle.includes('@c.us') && chatTitle !== 'Direct Chat') {
+        senderName = chatTitle;
+      }
+    }
+
+    // 5. Coba query ContactCollection di Puppeteer jika nama belum ditemukan atau masih berupa LID
+    if ((!senderName || senderName.includes('@lid')) && this.singleClient.client?.pupPage) {
+      try {
+        const rawId = msg.author || msg.from;
+        const puppeteerContact = await this.singleClient.client.pupPage.evaluate((targetId) => {
+          const WAWebCollections = window.require?.('WAWebCollections');
+          const ContactCollection = WAWebCollections?.Contact;
+          if (!ContactCollection) return null;
+          let c = ContactCollection.get(targetId);
+          if (!c && ContactCollection.getModelsArray) {
+            c = ContactCollection.getModelsArray().find(x => x.id?._serialized === targetId || x.id?.user === targetId);
+          }
+          if (c) {
+            return {
+              name: c.name || null,
+              formattedTitle: c.formattedTitle || null,
+              displayName: c.displayName || null,
+              pushname: c.pushname || null,
+              phoneNumber: c.phoneNumber ? (c.phoneNumber.user || c.phoneNumber) : (c.id?.user && !c.id?.server?.includes('lid') ? c.id.user : null)
+            };
+          }
+          return null;
+        }, rawId);
+
+        if (puppeteerContact) {
+          senderName = puppeteerContact.name || puppeteerContact.formattedTitle || puppeteerContact.displayName || puppeteerContact.pushname || senderName;
+          if (puppeteerContact.phoneNumber && !senderPhone) {
+            senderPhone = puppeteerContact.phoneNumber;
+          }
+        }
+      } catch (err) {}
+    }
+
+    // 6. Normalisasi senderPhone jika masih kosong atau JID
+    if (!senderPhone) {
+      const raw = msg.author || msg.from || '';
+      const userPart = raw.split('@')[0];
+      senderPhone = userPart || null;
+    }
+
+    // 7. Jika senderName masih kosong atau JID, gunakan senderPhone
+    if (!senderName || senderName.includes('@lid') || senderName.includes('@c.us')) {
+      senderName = senderPhone || 'Unknown';
+    }
+
+    return { senderPhone, senderName };
   }
 }
 

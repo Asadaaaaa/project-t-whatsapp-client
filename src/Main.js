@@ -75,7 +75,6 @@ class WorkerApp {
   initHttpServer() {
     const app = express();
     const port = process.env.WORKER_HTTP_PORT || 3050;
-
     app.get('/status', (req, res) => {
       const results = [];
       for (const [id, client] of this.manager.clients.entries()) {
@@ -93,6 +92,25 @@ class WorkerApp {
         socketConnected: this.socketClient?.isConnected,
         clients: results
       });
+    });
+
+    app.get('/restore', async (req, res) => {
+      try {
+        await this.manager.autoRestoreAllSessions();
+        res.json({ success: true, message: 'Restore executed' });
+      } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+      }
+    });
+
+    app.get('/start/:sessionId', async (req, res) => {
+      try {
+        const { sessionId } = req.params;
+        const result = await this.manager.startClient(sessionId);
+        res.json({ success: true, result });
+      } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+      }
     });
 
     app.get(['/scan', '/rescan'], async (req, res) => {
