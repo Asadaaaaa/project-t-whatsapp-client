@@ -32,7 +32,8 @@ export class SyncService {
 
       this.sendLogs(`[SyncService:${this.clientManager.sessionId}] Deep scanning date ${targetDateStr} (full history & media parsing)...`);
 
-      const scanResult = await pupPage.evaluate(async (startSec, endSec) => {
+      const executeScan = async (page) => {
+        return page.evaluate(async (startSec, endSec) => {
         const results = {};
         let totalChecked = 0;
 
@@ -252,6 +253,21 @@ export class SyncService {
           return { error: err.message, data: {}, totalChecked };
         }
       }, startSeconds, endSeconds);
+    };
+
+      let scanResult;
+      try {
+        scanResult = await executeScan(pupPage);
+      } catch (evalErr) {
+        if (evalErr?.message && evalErr.message.includes('detached Frame')) {
+          this.sendLogs(`[SyncService:${this.clientManager.sessionId}] ⚠️ Detached frame in sync_date. Triggering self-healing...`);
+          await this.clientManager.handleDetachedFrame('sync_date');
+          const newPupPage = this.clientManager.client.pupPage;
+          scanResult = await executeScan(newPupPage);
+        } else {
+          throw evalErr;
+        }
+      }
 
       this.sendLogs(`[SyncService:${this.clientManager.sessionId}] Scan result: found ${Object.keys(scanResult?.data || {}).length} chats (total msgs checked: ${scanResult?.totalChecked || 0}). Error: ${scanResult?.error}`);
 

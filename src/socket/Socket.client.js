@@ -91,7 +91,7 @@ class SocketClient {
       this.sendLogs(`Received disconnect command for session ${sessionId}`);
 
       try {
-        const result = await this.app.manager.stopClient(sessionId);
+        const result = await this.app.manager.stopClient(sessionId, true);
         if (typeof callback === 'function') {
           callback({ success: true, data: result });
         }
@@ -129,6 +129,87 @@ class SocketClient {
       } catch (err) {
         if (typeof callback === 'function') {
           callback({ success: false, error: err.message });
+        }
+      }
+    });
+
+    // 6. Send Message to WhatsApp Chat (Group or Contact)
+    this.socket.on('whatsapp:send_message', async (data, callback) => {
+      const { sessionId = 'default', chatId, message, userId = null } = data || {};
+      if (!chatId || !message) {
+        if (typeof callback === 'function') {
+          return callback({ success: false, error: 'chatId and message are required' });
+        }
+        return;
+      }
+
+      this.sendLogs(`Received send_message command for session ${sessionId} to ${chatId}`);
+      const clientObj = this.app.manager.getClient(sessionId, userId, false);
+      if (!clientObj || !clientObj.client || clientObj.status !== 'connected') {
+        this.sendLogs(`Cannot send message: session ${sessionId} not active or not connected`);
+        if (typeof callback === 'function') {
+          return callback({ success: false, error: `WhatsApp session ${sessionId} is not connected` });
+        }
+        return;
+      }
+
+      try {
+        let sent;
+        try {
+          sent = await clientObj.client.sendMessage(chatId, message);
+        } catch (sendErr) {
+          if (sendErr?.message && sendErr.message.includes('detached Frame')) {
+            this.sendLogs(`⚠️ Detached frame detected during sendMessage. Triggering self-healing...`);
+            await clientObj.handleDetachedFrame('sendMessage');
+            sent = await clientObj.client.sendMessage(chatId, message);
+          } else {
+            throw sendErr;
+          }
+        }
+        this.sendLogs(`✅ WhatsApp message successfully sent to ${chatId} (ID: ${sent?.id?._serialized})`);
+        if (typeof callback === 'function') {
+          callback({ success: true, data: { id: sent?.id?._serialized || null } });
+        }
+      } catch (err) {
+        this.sendLogs(`❌ Failed to send WhatsApp message to ${chatId}: ${err.message}`);
+        if (typeof callback === 'function') {
+          callback({ success: false, error: err.message });
+        }
+      }
+    });
+
+    // 7. Get Live Chats & Groups directly from WhatsApp Web client
+    this.socket.on('whatsapp:get_chats', async (data, callback) => {
+      const { sessionId = 'default', userId = null } = data || {};
+      const clientObj = this.app.manager.getClient(sessionId, userId, false);
+      if (!clientObj || !clientObj.client || clientObj.status !== 'connected') {
+        if (typeof callback === 'function') {
+          return callback({ success: false, error: 'Client not connected', data: [] });
+        }
+        return;
+      }
+
+      try {
+        let chats = [];
+        try {
+          chats = await clientObj.fetchAllChatsList();
+        } catch (fetchErr) {
+          if (fetchErr?.message && fetchErr.message.includes('detached Frame')) {
+            this.sendLogs(`⚠️ Detached frame detected during get_chats. Triggering self-healing...`);
+            await clientObj.handleDetachedFrame('get_chats');
+            chats = await clientObj.fetchAllChatsList();
+          } else {
+            throw fetchErr;
+          }
+        }
+        this.sendLogs(`[Session:${sessionId}] Fetched ${chats.length} live chats/groups for Controller`);
+        if (typeof callback === 'function') {
+          callback({ success: true, data: chats });
+        }
+      } catch (err) {
+        this.sendLogs(`[Session:${sessionId}] Error fetching live chats: ${err.message}`);
+        if (typeof callback === 'function') {
+          callback({ success: false, error: err.message, data: [] });
         }
       }
     });

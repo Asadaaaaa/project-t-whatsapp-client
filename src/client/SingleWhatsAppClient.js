@@ -91,6 +91,32 @@ export class SingleWhatsAppClient {
     }
   }
 
+  async handleDetachedFrame(source = '') {
+    this.sendLogs(`[WhatsAppClient:${this.sessionId}] ⚠️ Detached frame detected (${source}). Initiating self-healing reload...`);
+    try {
+      if (this.client?.pupBrowser) {
+        const pages = await this.client.pupBrowser.pages();
+        const waPage = pages.find((p) => p.url().includes('whatsapp.com')) || pages[0];
+        if (waPage) {
+          this.client.pupPage = waPage;
+          await waPage.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+          if (typeof this.client.inject === 'function') {
+            await this.client.inject().catch(() => {});
+          }
+          await this.injectFixes();
+          this.sendLogs(`[WhatsAppClient:${this.sessionId}] ✅ Self-healing reload completed.`);
+          return true;
+        }
+      }
+    } catch (e) {
+      this.sendLogs(`[WhatsAppClient:${this.sessionId}] Reload failed (${e.message}). Restarting client instance...`);
+      try {
+        await this.start(this.userId);
+      } catch (startErr) {}
+    }
+    return false;
+  }
+
   async start(userId = null) {
     if (userId) this.userId = userId;
 
@@ -106,6 +132,30 @@ export class SingleWhatsAppClient {
       this.client = null;
     }
 
+    // Clean up leftover lock files from previous abrupt terminations
+    try {
+      const sessionDir = path.join('./.wwebjs_auth', `session-${this.sessionId}`);
+      if (fs.existsSync(sessionDir)) {
+        const staleFiles = [
+          path.join(sessionDir, 'lockfile'),
+          path.join(sessionDir, 'Default', 'LOCK'),
+          path.join(sessionDir, 'Default', 'SingletonLock'),
+          path.join(sessionDir, 'Default', 'SingletonCookie'),
+          path.join(sessionDir, 'Default', 'SingletonSocket'),
+          path.join(sessionDir, 'SingletonLock'),
+          path.join(sessionDir, 'SingletonCookie'),
+          path.join(sessionDir, 'SingletonSocket')
+        ];
+        for (const f of staleFiles) {
+          try {
+            if (fs.existsSync(f)) {
+              fs.unlinkSync(f);
+            }
+          } catch (e) {}
+        }
+      }
+    } catch (e) {}
+
     this.status = 'connecting';
     this.qrCode = null;
     this.qrDataUrl = null;
@@ -118,11 +168,11 @@ export class SingleWhatsAppClient {
         clientId: this.sessionId
       }),
       webVersionCache: {
-        type: 'remote',
-        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-js/main/dist/wppconnect-wa.js',
+        type: 'none'
       },
       puppeteer: {
         headless: true,
+        protocolTimeout: 120000,
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
@@ -131,7 +181,15 @@ export class SingleWhatsAppClient {
           '--no-first-run',
           '--no-zygote',
           '--disable-gpu',
-          '--disable-extensions'
+          '--disable-extensions',
+          '--disable-session-crashed-bubble',
+          '--no-default-browser-check',
+          '--disable-background-timer-throttling',
+          '--disable-backgrounding-occluded-windows',
+          '--disable-renderer-backgrounding',
+          '--disable-features=IsolateOrigins,site-per-process,CalculateNativeWinOcclusion',
+          '--disable-site-isolation-trials',
+          '--disable-ipc-flooding-protection'
         ]
       }
     });
@@ -197,10 +255,73 @@ export class SingleWhatsAppClient {
         } catch (e) {}
       }, 10000);
       this.sendLogs(`[WhatsAppClient:${this.sessionId}] ⏱️ Background scanner #reimburse aktif (berjalan setiap 10 detik)`);
+
+      // Auto-sync semua daftar chat & grup ke Controller saat client connect
+      setTimeout(async () => {
+        try {
+          if (this.status === 'connected') {
+            const chats = await this.fetchAllChatsList();
+            if (chats.length > 0 && this.manager?.app?.socketClient) {
+              await this.manager.app.socketClient.emitSyncBatch({
+                sessionId: this.sessionId,
+                userId: this.userId,
+                chats: chats.map((c) => ({
+                  id: c.id,
+                  name: c.name,
+                  isGroup: c.isGroup,
+                  phoneNumber: c.phoneNumber,
+                  messages: []
+                }))
+              });
+              this.sendLogs(`[WhatsAppClient:${this.sessionId}] 📋 Tersinkron ${chats.length} chat & grup ke Controller`);
+            }
+          }
+        } catch (e) {
+          this.sendLogs(`[WhatsAppClient:${this.sessionId}] Error sync all chats: ${e.message}`);
+        }
+      }, 4000);
     });
 
     this.client.on('message_create', (msg) => {
       this.messageHandler.handle(msg);
+    });
+
+    this.client.on('group_join', async () => {
+      try {
+        const chats = await this.fetchAllChatsList();
+        if (chats.length > 0 && this.manager?.app?.socketClient) {
+          await this.manager.app.socketClient.emitSyncBatch({
+            sessionId: this.sessionId,
+            userId: this.userId,
+            chats: chats.map((c) => ({
+              id: c.id,
+              name: c.name,
+              isGroup: c.isGroup,
+              phoneNumber: c.phoneNumber,
+              messages: []
+            }))
+          });
+        }
+      } catch (e) {}
+    });
+
+    this.client.on('group_update', async () => {
+      try {
+        const chats = await this.fetchAllChatsList();
+        if (chats.length > 0 && this.manager?.app?.socketClient) {
+          await this.manager.app.socketClient.emitSyncBatch({
+            sessionId: this.sessionId,
+            userId: this.userId,
+            chats: chats.map((c) => ({
+              id: c.id,
+              name: c.name,
+              isGroup: c.isGroup,
+              phoneNumber: c.phoneNumber,
+              messages: []
+            }))
+          });
+        }
+      } catch (e) {}
     });
 
     this.client.on('disconnected', (reason) => {
@@ -227,7 +348,7 @@ export class SingleWhatsAppClient {
     }
   }
 
-  async stop() {
+  async stop(clean = false) {
     if (this.reimburseScanInterval) {
       clearInterval(this.reimburseScanInterval);
       this.reimburseScanInterval = null;
@@ -237,24 +358,85 @@ export class SingleWhatsAppClient {
     this.notifyQRUpdate(null, null);
 
     if (this.client) {
-      try {
-        await this.client.logout();
-      } catch (e) {}
+      if (clean) {
+        try {
+          await this.client.logout();
+        } catch (e) {}
+      }
       try {
         await this.client.destroy();
       } catch (e) {}
       this.client = null;
     }
 
-    try {
-      const sessionPath = path.join('./.wwebjs_auth', `session-${this.sessionId}`);
-      if (fs.existsSync(sessionPath)) {
-        fs.rmSync(sessionPath, { recursive: true, force: true });
-      }
-    } catch (e) {}
+    if (clean) {
+      try {
+        const sessionPath = path.join('./.wwebjs_auth', `session-${this.sessionId}`);
+        if (fs.existsSync(sessionPath)) {
+          fs.rmSync(sessionPath, { recursive: true, force: true });
+        }
+      } catch (e) {}
+    }
 
     await this.notifySessionUpdate('disconnected');
     return { success: true };
+  }
+
+  async fetchAllChatsList() {
+    if (!this.client || this.status !== 'connected') {
+      return [];
+    }
+
+    try {
+      if (this.client.pupPage && !this.client.pupPage.isClosed()) {
+        const chats = await this.client.pupPage.evaluate(() => {
+          try {
+            const WAWebCollections = window.require?.('WAWebCollections');
+            const ChatCollection = WAWebCollections?.Chat;
+            if (!ChatCollection) return [];
+            const list = ChatCollection.getModelsArray ? ChatCollection.getModelsArray() : [];
+            const results = [];
+            for (const chat of list) {
+              const id = chat.id?._serialized || '';
+              if (
+                id &&
+                !id.endsWith('@newsletter') &&
+                !id.endsWith('@broadcast') &&
+                id !== 'status@broadcast'
+              ) {
+                const name = chat.name || chat.formattedTitle || (chat.contact ? (chat.contact.name || chat.contact.pushname) : '') || '';
+                const isGroup = !!chat.isGroup;
+                const phoneNumber = chat.id?.user || null;
+                results.push({
+                  id,
+                  name: name || id,
+                  isGroup,
+                  phoneNumber
+                });
+              }
+            }
+            return results;
+          } catch (e) {
+            return [];
+          }
+        });
+
+        if (Array.isArray(chats) && chats.length > 0) {
+          return chats;
+        }
+      }
+
+      const rawChats = await this.client.getChats();
+      return (rawChats || []).map((c) => ({
+        id: c.id?._serialized || '',
+        name: c.name || c.formattedTitle || '',
+        isGroup: !!c.isGroup,
+        phoneNumber: c.id?.user || null
+      })).filter((c) => c.id && !c.id.endsWith('@newsletter') && !c.id.endsWith('@broadcast'));
+    } catch (err) {
+      this.sendLogs(`[WhatsAppClient:${this.sessionId}] Error fetching chats list: ${err.message}`);
+      return [];
+    }
   }
 
   getStatus() {

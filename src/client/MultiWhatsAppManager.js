@@ -26,10 +26,10 @@ export class MultiWhatsAppManager {
     return client.start(userId);
   }
 
-  async stopClient(sessionId = 'default') {
+  async stopClient(sessionId = 'default', clean = false) {
     const client = this.getClient(sessionId, null, false);
     if (!client) return { success: true };
-    const res = await client.stop();
+    const res = await client.stop(clean);
     this.clients.delete(sessionId);
     return res;
   }
@@ -89,23 +89,12 @@ export class MultiWhatsAppManager {
           const sessionId = entry.name.replace('session-', '');
           const sessionPath = path.join(authDir, entry.name);
 
-          // If session is NOT in database, PURGE it from disk!
-          if (dbSessions !== null && !validSessionIds.has(sessionId)) {
-            this.sendLogs(`🗑️ Purging orphan disk session '${sessionId}' (not in DB)...`);
-            try {
-              fs.rmSync(sessionPath, { recursive: true, force: true });
-            } catch (rmErr) {
-              this.sendLogs(`Failed to delete orphan folder ${sessionPath}: ${rmErr.message}`);
-            }
-            continue;
-          }
-
-          // Otherwise restore valid session
+          // Restore valid session
           let userId = null;
           if (sessionId.startsWith('user_')) {
             userId = Number(sessionId.replace('user_', '')) || null;
           }
-          this.sendLogs(`Restoring valid DB session: ${sessionId}`);
+          this.sendLogs(`Restoring saved session: ${sessionId}`);
           restoredCount++;
           const client = this.getClient(sessionId, userId, true);
           client.start(userId).catch((err) => {

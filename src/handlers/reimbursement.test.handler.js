@@ -767,7 +767,7 @@ export class ReimbursementTestHandler {
     }
 
     // 1. Dapatkan JID / LID pengirim pesan request (quotedMsg)
-    const participantJid =
+    const rawParticipant =
       targetMsg.author ||
       mainMsg?.quotedParticipant ||
       mainMsg?._data?.quotedParticipant ||
@@ -775,6 +775,13 @@ export class ReimbursementTestHandler {
       targetMsg.from ||
       (targetMsg.id?._serialized ? targetMsg.id._serialized.split('_')[1] : null) ||
       null;
+
+    let participantJid = null;
+    if (typeof rawParticipant === 'string') {
+      participantJid = rawParticipant;
+    } else if (rawParticipant && typeof rawParticipant === 'object') {
+      participantJid = rawParticipant._serialized || rawParticipant.user || String(rawParticipant.id || '');
+    }
 
     // 2. Periksa apakah pesan request dikirim oleh diri sendiri
     const isFromMe = Boolean(
@@ -875,7 +882,9 @@ export class ReimbursementTestHandler {
 
     // 7. Normalisasi requesterPhone jika masih kosong
     if (!requesterPhone && participantJid) {
-      const userPart = participantJid.split('@')[0];
+      const userPart = typeof participantJid === 'string' && participantJid.includes('@')
+        ? participantJid.split('@')[0]
+        : String(participantJid || '');
       requesterPhone = userPart || null;
     }
 

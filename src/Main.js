@@ -2,7 +2,7 @@ import * as dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
 import express from 'express';
-import { LoggerHelper as sendLogs } from '#helpers';
+import { LoggerHelper as sendLogs, cleanupOrphanedPuppeteer } from '#helpers';
 import { MultiWhatsAppManager } from '#client';
 import { SocketClient } from '#socket';
 
@@ -20,6 +20,9 @@ class WorkerApp {
   }
 
   init() {
+    // 0. Clean up any orphaned Chrome Puppeteer processes and stale locks from sudden restarts
+    cleanupOrphanedPuppeteer(this.sendLogs);
+
     // 1. Initialize WhatsApp Multi-session Manager
     this.manager = new MultiWhatsAppManager(this);
 
@@ -61,15 +64,30 @@ class WorkerApp {
     });
 
     // 5. Graceful process termination
-    process.on('SIGINT', async () => {
-      this.sendLogs('SIGINT received. Shutting down worker...');
+    let isShuttingDown = false;
+    const handleShutdown = async (signal) => {
+      if (isShuttingDown) return;
+      isShuttingDown = true;
+      this.sendLogs(`${signal} received. Closing WhatsApp clients gracefully...`);
+      try {
+        if (this.manager && this.manager.clients) {
+          const promises = [];
+          for (const [id, client] of this.manager.clients.entries()) {
+            if (client.client) {
+              promises.push(client.client.destroy().catch(() => {}));
+            }
+          }
+          await Promise.race([
+            Promise.all(promises),
+            new Promise((r) => setTimeout(r, 2000))
+          ]);
+        }
+      } catch (e) {}
       process.exit(0);
-    });
+    };
 
-    process.on('SIGTERM', async () => {
-      this.sendLogs('SIGTERM received. Shutting down worker...');
-      process.exit(0);
-    });
+    process.on('SIGINT', () => handleShutdown('SIGINT'));
+    process.on('SIGTERM', () => handleShutdown('SIGTERM'));
   }
 
   initHttpServer() {
