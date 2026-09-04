@@ -201,10 +201,9 @@ export class ReimbursementTestHandler {
 
       this.sendLogs(`[ReimbursementTest] 🎉 Download media kedua gambar berhasil! Mengirimkan ke Controller...`);
 
-      // Kirim data lengkap ke Controller API via Socket.IO untuk disimpan & dianalisis Gemini AI
-      // Dapatkan identitas pengirim (nama kontak buku telepon / pushname & nomor telepon)
-      const { senderPhone, senderName } = await this.resolveSenderInfo(msg, chat);
-      this.sendLogs(`[ReimbursementTest] 👤 Pengirim teridentifikasi: "${senderName}" (${senderPhone})`);
+      // Dapatkan identitas pemohon / yang me-request reimbursement (dari pesan nota/quotedMsg)
+      const { senderPhone, senderName } = await this.resolveRequesterInfo(quotedMsg, chat, msg);
+      this.sendLogs(`[ReimbursementTest] 👤 Pemohon (Yang Request) teridentifikasi: "${senderName}" (${senderPhone})`);
 
       // Kirim data lengkap ke Controller API via Socket.IO untuk disimpan & dianalisis Gemini AI
       try {
@@ -754,104 +753,138 @@ export class ReimbursementTestHandler {
   }
 
   /**
-   * Mengambil identitas pengirim (nama kontak buku telepon / pushname & nomor telepon) seakurat mungkin
+   * Mengambil identitas pemohon / yang me-request reimbursement
+   * (yaitu orang yang mengirimkan pesan nota / struk yang di-reply)
    */
-  async resolveSenderInfo(msg, chat) {
-    let senderPhone = null;
-    let senderName = null;
+  async resolveRequesterInfo(quotedMsg, chat, mainMsg) {
+    let requesterPhone = null;
+    let requesterName = null;
 
-    // 1. Jika pesan dikirim oleh diri sendiri (fromMe)
-    if (msg.fromMe) {
-      senderPhone = this.singleClient.clientInfo?.wid?.user || this.singleClient.client?.info?.wid?.user || null;
-      const myPush = this.singleClient.clientInfo?.pushname || this.singleClient.client?.info?.pushname;
-      senderName = myPush ? `Saya (${myPush})` : 'Saya';
-      return { senderPhone, senderName };
+    // Jika quotedMsg tidak ada (fallback ke mainMsg)
+    const targetMsg = quotedMsg || mainMsg;
+    if (!targetMsg) {
+      return { senderPhone: null, senderName: 'Unknown' };
     }
 
-    // 2. Coba getContact bawaan whatsapp-web.js
+    // 1. Dapatkan JID / LID pengirim pesan request (quotedMsg)
+    const participantJid =
+      targetMsg.author ||
+      mainMsg?.quotedParticipant ||
+      mainMsg?._data?.quotedParticipant ||
+      mainMsg?.__x_quotedParticipant ||
+      targetMsg.from ||
+      (targetMsg.id?._serialized ? targetMsg.id._serialized.split('_')[1] : null) ||
+      null;
+
+    // 2. Periksa apakah pesan request dikirim oleh diri sendiri
+    const isFromMe = Boolean(
+      targetMsg.fromMe ||
+      targetMsg.id?.fromMe ||
+      (typeof targetMsg.id?._serialized === 'string' && targetMsg.id._serialized.startsWith('true_')) ||
+      (typeof mainMsg?.quotedStanzaID === 'string' && mainMsg._data?.quotedMsg?.id?.fromMe)
+    );
+
+    if (isFromMe) {
+      requesterPhone = this.singleClient.clientInfo?.wid?.user || this.singleClient.client?.info?.wid?.user || null;
+      const myPush = this.singleClient.clientInfo?.pushname || this.singleClient.client?.info?.pushname;
+      requesterName = myPush ? `Saya (${myPush})` : 'Saya';
+      return { senderPhone: requesterPhone, senderName: requesterName };
+    }
+
+    // 3. Coba getContact() dari targetMsg atau via client.getContactById
     let contact = null;
     try {
-      if (typeof msg.getContact === 'function') {
-        contact = await msg.getContact();
+      if (typeof targetMsg.getContact === 'function') {
+        contact = await targetMsg.getContact();
       }
     } catch (e) {}
 
+    if (!contact && participantJid && typeof this.singleClient.client?.getContactById === 'function') {
+      try {
+        contact = await this.singleClient.client.getContactById(participantJid);
+      } catch (e) {}
+    }
+
     if (contact) {
-      // Prioritas 1: Nama yang disimpan di kontak buku telepon (contact.name)
+      // Prioritas 1: Nama kontak yang disimpan di buku telepon (contact.name / contact.shortName)
       if (contact.name && typeof contact.name === 'string' && contact.name.trim()) {
-        senderName = contact.name.trim();
+        requesterName = contact.name.trim();
       } else if (contact.shortName && typeof contact.shortName === 'string' && contact.shortName.trim()) {
-        senderName = contact.shortName.trim();
+        requesterName = contact.shortName.trim();
       } else if (contact.pushname && typeof contact.pushname === 'string' && contact.pushname.trim()) {
         // Prioritas 2: Pushname publik WhatsApp
-        senderName = contact.pushname.trim();
+        requesterName = contact.pushname.trim();
       }
 
       if (contact.number) {
-        senderPhone = String(contact.number);
+        requesterPhone = String(contact.number);
       }
     }
 
-    // 3. Cek notifyName dari payload _data pesan
-    if (!senderName && msg._data?.notifyName) {
-      senderName = String(msg._data.notifyName).trim();
-    }
-
-    // 4. Jika di direct chat (bukan grup), gunakan nama chat sebagai nama kontak
-    const isGroup = Boolean(chat?.isGroup || chat?.id?._serialized?.endsWith('@g.us'));
-    if (!senderName && !isGroup && chat) {
-      const chatTitle = chat.name || chat.formattedTitle;
-      if (chatTitle && !chatTitle.includes('@lid') && !chatTitle.includes('@c.us') && chatTitle !== 'Direct Chat') {
-        senderName = chatTitle;
+    // 4. Cek notifyName dari data quotedMsg atau mainMsg._data.quotedMsg
+    if (!requesterName) {
+      const nName = targetMsg._data?.notifyName || mainMsg?._data?.quotedMsg?.notifyName || targetMsg._data?.verifiedName;
+      if (nName && typeof nName === 'string' && nName.trim()) {
+        requesterName = nName.trim();
       }
     }
 
-    // 5. Coba query ContactCollection di Puppeteer jika nama belum ditemukan atau masih berupa LID
-    if ((!senderName || senderName.includes('@lid')) && this.singleClient.client?.pupPage) {
+    // 5. Coba query ContactCollection & ChatCollection di Puppeteer menggunakan participantJid
+    if ((!requesterName || requesterName.includes('@lid')) && participantJid && this.singleClient.client?.pupPage) {
       try {
-        const rawId = msg.author || msg.from;
         const puppeteerContact = await this.singleClient.client.pupPage.evaluate((targetId) => {
           const WAWebCollections = window.require?.('WAWebCollections');
           const ContactCollection = WAWebCollections?.Contact;
-          if (!ContactCollection) return null;
-          let c = ContactCollection.get(targetId);
-          if (!c && ContactCollection.getModelsArray) {
+          const ChatCollection = WAWebCollections?.Chat;
+
+          let c = ContactCollection?.get ? ContactCollection.get(targetId) : null;
+          if (!c && ContactCollection?.getModelsArray) {
             c = ContactCollection.getModelsArray().find(x => x.id?._serialized === targetId || x.id?.user === targetId);
           }
-          if (c) {
-            return {
-              name: c.name || null,
-              formattedTitle: c.formattedTitle || null,
-              displayName: c.displayName || null,
-              pushname: c.pushname || null,
-              phoneNumber: c.phoneNumber ? (c.phoneNumber.user || c.phoneNumber) : (c.id?.user && !c.id?.server?.includes('lid') ? c.id.user : null)
-            };
-          }
-          return null;
-        }, rawId);
+
+          let chatModel = ChatCollection?.get ? ChatCollection.get(targetId) : null;
+
+          return {
+            contactName: c?.name || c?.formattedTitle || c?.displayName || c?.pushname || null,
+            chatTitle: chatModel?.name || chatModel?.formattedTitle || null,
+            phoneNumber: c?.phoneNumber ? (c.phoneNumber.user || c.phoneNumber) : (c?.id?.user && !c?.id?.server?.includes('lid') ? c.id.user : null)
+          };
+        }, participantJid);
 
         if (puppeteerContact) {
-          senderName = puppeteerContact.name || puppeteerContact.formattedTitle || puppeteerContact.displayName || puppeteerContact.pushname || senderName;
-          if (puppeteerContact.phoneNumber && !senderPhone) {
-            senderPhone = puppeteerContact.phoneNumber;
+          if (puppeteerContact.contactName) {
+            requesterName = puppeteerContact.contactName;
+          } else if (puppeteerContact.chatTitle && !puppeteerContact.chatTitle.includes('@lid') && !puppeteerContact.chatTitle.includes('@c.us')) {
+            requesterName = puppeteerContact.chatTitle;
+          }
+          if (puppeteerContact.phoneNumber && !requesterPhone) {
+            requesterPhone = puppeteerContact.phoneNumber;
           }
         }
       } catch (err) {}
     }
 
-    // 6. Normalisasi senderPhone jika masih kosong atau JID
-    if (!senderPhone) {
-      const raw = msg.author || msg.from || '';
-      const userPart = raw.split('@')[0];
-      senderPhone = userPart || null;
+    // 6. Jika direct chat (1-on-1) dan requesterName masih belum ketemu, gunakan nama chat
+    const isGroup = Boolean(chat?.isGroup || chat?.id?._serialized?.endsWith('@g.us'));
+    if (!requesterName && !isGroup && chat) {
+      const chatTitle = chat.name || chat.formattedTitle;
+      if (chatTitle && !chatTitle.includes('@lid') && !chatTitle.includes('@c.us') && chatTitle !== 'Direct Chat') {
+        requesterName = chatTitle;
+      }
     }
 
-    // 7. Jika senderName masih kosong atau JID, gunakan senderPhone
-    if (!senderName || senderName.includes('@lid') || senderName.includes('@c.us')) {
-      senderName = senderPhone || 'Unknown';
+    // 7. Normalisasi requesterPhone jika masih kosong
+    if (!requesterPhone && participantJid) {
+      const userPart = participantJid.split('@')[0];
+      requesterPhone = userPart || null;
     }
 
-    return { senderPhone, senderName };
+    // 8. Fallback jika requesterName masih kosong atau string JID
+    if (!requesterName || requesterName.includes('@lid') || requesterName.includes('@c.us')) {
+      requesterName = requesterPhone || 'Pemohon';
+    }
+
+    return { senderPhone: requesterPhone, senderName: requesterName };
   }
 }
 
