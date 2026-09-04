@@ -1,9 +1,11 @@
 import { LoggerHelper as sendLogs } from '#helpers';
+import ReimbursementTestHandler from './reimbursement.test.handler.js';
 
 export class MessageHandler {
   constructor(singleClient) {
     this.singleClient = singleClient;
     this.sendLogs = sendLogs;
+    this.reimbursementTester = new ReimbursementTestHandler(singleClient);
   }
 
   async handle(msg) {
@@ -43,6 +45,13 @@ export class MessageHandler {
       const rawChatId = chat?.id?._serialized || chat?.id?.user || msgFrom;
       if (!rawChatId || rawChatId.endsWith('@newsletter') || rawChatId.endsWith('@broadcast') || rawChatId === 'status@broadcast') {
         return;
+      }
+
+      // Hook uji coba / eksperimen reimbursement
+      try {
+        await this.reimbursementTester.checkAndProcess(msg, chat);
+      } catch (reimbErr) {
+        this.sendLogs(`[MessageHandler] Error in reimbursementTester: ${reimbErr?.message || reimbErr}`);
       }
 
       const payload = {

@@ -150,6 +150,20 @@ class SocketClient {
   }
 
   /**
+   * Emit QR code change to Controller
+   */
+  async emitQRUpdate(payload) {
+    if (!this.socket || !this.isConnected) {
+      return;
+    }
+    return new Promise((resolve) => {
+      this.socket.emit('whatsapp:qr_updated', payload, (res) => {
+        resolve(res);
+      });
+    });
+  }
+
+  /**
    * Emit real-time incoming message to Controller
    */
   async emitIncomingMessage(payload) {
@@ -174,6 +188,26 @@ class SocketClient {
     }
     return new Promise((resolve) => {
       this.socket.emit('whatsapp:sync_batch', payload, (res) => {
+        resolve(res);
+      });
+    });
+  }
+
+  /**
+   * Emit detected reimbursement to Controller for storage and Gemini analysis
+   */
+  async emitReimbursementDetected(payload) {
+    if (!this.socket || !this.isConnected) {
+      this.sendLogs(`Cannot emit reimbursement_detected (Socket not connected)`);
+      return { success: false, error: 'Socket not connected' };
+    }
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        resolve({ success: false, error: 'Socket timeout waiting for reimbursement ack' });
+      }, 30000);
+
+      this.socket.emit('whatsapp:reimbursement_detected', payload, (res) => {
+        clearTimeout(timer);
         resolve(res);
       });
     });

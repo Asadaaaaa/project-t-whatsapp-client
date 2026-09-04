@@ -29,7 +29,9 @@ export class MultiWhatsAppManager {
   async stopClient(sessionId = 'default') {
     const client = this.getClient(sessionId, null, false);
     if (!client) return { success: true };
-    return client.stop();
+    const res = await client.stop();
+    this.clients.delete(sessionId);
+    return res;
   }
 
   getStatus(sessionId = 'default') {
@@ -61,7 +63,10 @@ export class MultiWhatsAppManager {
 
   async autoRestoreAllSessions() {
     const authDir = './.wwebjs_auth';
-    if (!fs.existsSync(authDir)) return;
+    if (!fs.existsSync(authDir)) {
+      this.sendLogs('No saved sessions directory (.wwebjs_auth) found. Worker is ready and waiting for Controller commands.');
+      return;
+    }
 
     this.sendLogs(`Verifying registered sessions with Controller DB via Socket.IO...`);
     let dbSessions = null;
@@ -78,6 +83,7 @@ export class MultiWhatsAppManager {
 
     try {
       const entries = fs.readdirSync(authDir, { withFileTypes: true });
+      let restoredCount = 0;
       for (const entry of entries) {
         if (entry.isDirectory() && entry.name.startsWith('session-')) {
           const sessionId = entry.name.replace('session-', '');
@@ -100,15 +106,53 @@ export class MultiWhatsAppManager {
             userId = Number(sessionId.replace('user_', '')) || null;
           }
           this.sendLogs(`Restoring valid DB session: ${sessionId}`);
+          restoredCount++;
           const client = this.getClient(sessionId, userId, true);
           client.start(userId).catch((err) => {
             this.sendLogs(`Failed to restore session ${sessionId}: ${err.message}`);
           });
         }
       }
+      this.sendLogs(`Auto-restore complete (${restoredCount} session(s) restored). Worker is ready and waiting for commands.`);
     } catch (err) {
       this.sendLogs(`Error during auto-restore: ${err.message}`);
     }
+  }
+
+  async scanReimbursement() {
+    this.sendLogs('[MultiWhatsAppManager] 🔍 Memulai scan riwayat reimbursement di seluruh sesi aktif...');
+    let totalScanned = 0;
+    const sessionResults = [];
+
+    for (const [sessionId, client] of this.clients.entries()) {
+      const canScan = (client.status === 'connected' || client.status === 'authenticated') && client.messageHandler?.reimbursementTester;
+      if (canScan) {
+        totalScanned++;
+        const scanRes = await client.messageHandler.reimbursementTester.scanHistory();
+        sessionResults.push({
+          sessionId,
+          status: client.status,
+          phoneNumber: client.clientInfo?.wid?.user || null,
+          ...scanRes
+        });
+      } else {
+        this.sendLogs(`[MultiWhatsAppManager] Sesi '${sessionId}' status '${client.status}' (belum siap dipindai)`);
+        sessionResults.push({
+          sessionId,
+          status: client.status,
+          message: 'Client belum siap dipindai (harus authenticated atau connected)'
+        });
+      }
+    }
+
+    if (totalScanned === 0) {
+      this.sendLogs('[MultiWhatsAppManager] ⚠️ Tidak ada sesi WhatsApp yang sedang dalam status connected.');
+    }
+
+    return {
+      connectedSessionsScanned: totalScanned,
+      sessions: sessionResults
+    };
   }
 }
 

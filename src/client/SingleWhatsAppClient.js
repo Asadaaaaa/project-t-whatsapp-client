@@ -36,6 +36,20 @@ export class SingleWhatsAppClient {
     }
   }
 
+  async notifyQRUpdate(qr = null, qrDataUrl = null) {
+    this.qrCode = qr;
+    this.qrDataUrl = qrDataUrl;
+    const socketClient = this.manager?.app?.socketClient;
+    if (socketClient) {
+      await socketClient.emitQRUpdate({
+        sessionId: this.sessionId,
+        qr,
+        qrDataUrl,
+        userId: this.userId
+      });
+    }
+  }
+
   async injectFixes() {
     try {
       if (!this.client?.pupPage) return;
@@ -132,19 +146,20 @@ export class SingleWhatsAppClient {
         this.sendLogs(`[WhatsAppClient:${this.sessionId}] Error generating QR Data URL: ${e.message}`);
       }
       this.notifySessionUpdate('connecting');
+      this.notifyQRUpdate(qr, this.qrDataUrl);
     });
 
     this.client.on('authenticated', () => {
       this.sendLogs(`[WhatsAppClient:${this.sessionId}] Authenticated successfully`);
       this.status = 'authenticated';
-      this.qrCode = null;
-      this.qrDataUrl = null;
+      this.notifyQRUpdate(null, null);
       this.notifySessionUpdate('authenticated');
     });
 
     this.client.on('auth_failure', (msg) => {
       this.sendLogs(`[WhatsAppClient:${this.sessionId}] Auth failure: ${msg}`);
       this.status = 'disconnected';
+      this.notifyQRUpdate(null, null);
       this.notifySessionUpdate('disconnected');
     });
 
@@ -155,8 +170,33 @@ export class SingleWhatsAppClient {
       const phoneNumber = this.client.info?.wid?.user || null;
       this.sendLogs(`[WhatsAppClient:${this.sessionId}] Connected Phone Number: ${phoneNumber}`);
 
+      this.notifyQRUpdate(null, null);
       await this.notifySessionUpdate('connected', phoneNumber);
       await this.injectFixes();
+
+      // Auto-scan awal pesan lama #reimburse beberapa detik setelah siap
+      setTimeout(async () => {
+        try {
+          if (this.status === 'connected' && this.messageHandler?.reimbursementTester) {
+            await this.messageHandler.reimbursementTester.scanHistory({ quiet: false });
+          }
+        } catch (e) {
+          this.sendLogs(`[WhatsAppClient:${this.sessionId}] Error during initial scan: ${e.message}`);
+        }
+      }, 3500);
+
+      // Background scan berkala otomatis setiap 10 detik
+      if (this.reimburseScanInterval) {
+        clearInterval(this.reimburseScanInterval);
+      }
+      this.reimburseScanInterval = setInterval(async () => {
+        try {
+          if (this.status === 'connected' && this.messageHandler?.reimbursementTester) {
+            await this.messageHandler.reimbursementTester.scanHistory({ quiet: true });
+          }
+        } catch (e) {}
+      }, 10000);
+      this.sendLogs(`[WhatsAppClient:${this.sessionId}] ⏱️ Background scanner #reimburse aktif (berjalan setiap 10 detik)`);
     });
 
     this.client.on('message_create', (msg) => {
@@ -165,10 +205,13 @@ export class SingleWhatsAppClient {
 
     this.client.on('disconnected', (reason) => {
       this.sendLogs(`[WhatsAppClient:${this.sessionId}] Client disconnected: ${reason}`);
+      if (this.reimburseScanInterval) {
+        clearInterval(this.reimburseScanInterval);
+        this.reimburseScanInterval = null;
+      }
       this.status = 'disconnected';
       this.clientInfo = null;
-      this.qrCode = null;
-      this.qrDataUrl = null;
+      this.notifyQRUpdate(null, null);
       this.notifySessionUpdate('disconnected');
     });
 
@@ -178,16 +221,20 @@ export class SingleWhatsAppClient {
     } catch (err) {
       this.sendLogs(`[WhatsAppClient:${this.sessionId}] Initialization error: ${err.message}`);
       this.status = 'disconnected';
+      this.notifyQRUpdate(null, null);
       this.notifySessionUpdate('disconnected');
       return { success: false, error: err.message };
     }
   }
 
   async stop() {
+    if (this.reimburseScanInterval) {
+      clearInterval(this.reimburseScanInterval);
+      this.reimburseScanInterval = null;
+    }
     this.status = 'disconnected';
-    this.qrCode = null;
-    this.qrDataUrl = null;
     this.clientInfo = null;
+    this.notifyQRUpdate(null, null);
 
     if (this.client) {
       try {
