@@ -32,8 +32,9 @@ export class SyncService {
 
       this.sendLogs(`[SyncService:${this.clientManager.sessionId}] Deep scanning date ${targetDateStr} (full history & media parsing)...`);
 
+      const excludedArray = Array.from(this.clientManager.excludedContactIds || []);
       const executeScan = async (page) => {
-        return page.evaluate(async (startSec, endSec) => {
+        return page.evaluate(async (startSec, endSec, excludedList) => {
         const results = {};
         let totalChecked = 0;
 
@@ -45,19 +46,28 @@ export class SyncService {
           return String(idObj);
         };
 
-        const isChatIgnored = (chat) => {
-          if (!chat) return false;
+        const isChatIgnored = (chat, chatIdStr = '') => {
+          if (!chat && !chatIdStr) return false;
+          // Ignore excluded contacts from Contact Exceptional config
+          if (Array.isArray(excludedList) && excludedList.length > 0) {
+            const idToCheck = chatIdStr || getChatIdString(chat?.id);
+            if (idToCheck) {
+              const str = String(idToCheck);
+              if (excludedList.includes(str)) return true;
+              if (str.includes('@') && excludedList.includes(str.split('@')[0])) return true;
+            }
+          }
           // Ignore archived chats
-          if (chat.archive || chat.isArchived || chat.archived) return true;
+          if (chat?.archive || chat?.isArchived || chat?.archived) return true;
           // Ignore locked chats
           if (
-            chat.isLocked ||
-            chat.locked ||
-            chat.isChatLocked ||
-            chat.isLockChat ||
-            chat.isLockedChat ||
-            chat.chatLock?.isLocked ||
-            chat.lock
+            chat?.isLocked ||
+            chat?.locked ||
+            chat?.isChatLocked ||
+            chat?.isLockChat ||
+            chat?.isLockedChat ||
+            chat?.chatLock?.isLocked ||
+            chat?.lock
           ) {
             return true;
           }
@@ -119,8 +129,8 @@ export class SyncService {
               continue;
             }
 
-            // Exclude archived and locked chats
-            if (isChatIgnored(chat)) {
+            // Exclude archived, locked, and blacklisted chats
+            if (isChatIgnored(chat, rawChatId)) {
               continue;
             }
 
@@ -207,8 +217,8 @@ export class SyncService {
                 if (!rawChatId || rawChatId === 'status@broadcast' || rawChatId.endsWith('@broadcast') || rawChatId.endsWith('@newsletter')) continue;
 
                 const chatModel = ChatCollection.get(rawChatId);
-                // Exclude archived and locked chats in global scan
-                if (isChatIgnored(chatModel)) {
+                // Exclude archived, locked, and blacklisted chats in global scan
+                if (isChatIgnored(chatModel, rawChatId)) {
                   continue;
                 }
 
@@ -252,7 +262,7 @@ export class SyncService {
         } catch (err) {
           return { error: err.message, data: {}, totalChecked };
         }
-      }, startSeconds, endSeconds);
+      }, startSeconds, endSeconds, excludedArray);
     };
 
       let scanResult;

@@ -8,12 +8,49 @@ export class MultiWhatsAppManager {
     this.app = app;
     this.sendLogs = sendLogs;
     this.clients = new Map(); // sessionId -> SingleWhatsAppClient
+    this.excludedContactIds = new Set();
+  }
+
+  setContactExceptions(list = []) {
+    this.excludedContactIds.clear();
+    for (const item of list) {
+      if (!item) continue;
+      const str = String(item).trim();
+      if (str) {
+        this.excludedContactIds.add(str);
+        if (str.includes('@')) {
+          this.excludedContactIds.add(str.split('@')[0]);
+        }
+      }
+    }
+    this.sendLogs(`[MultiWhatsAppManager] Blacklist updated: ${this.excludedContactIds.size} excluded contact identifiers loaded`);
+    for (const client of this.clients.values()) {
+      client.excludedContactIds = this.excludedContactIds;
+    }
+  }
+
+  isContactExcluded(chatId, senderId, phone) {
+    if (this.excludedContactIds.size === 0) return false;
+
+    const check = (val) => {
+      if (!val) return false;
+      const str = String(val).trim();
+      if (this.excludedContactIds.has(str)) return true;
+      if (str.includes('@')) {
+        const user = str.split('@')[0];
+        if (this.excludedContactIds.has(user)) return true;
+      }
+      return false;
+    };
+
+    return check(chatId) || check(senderId) || check(phone);
   }
 
   getClient(sessionId = 'default', userId = null, autoCreate = true) {
     if (!this.clients.has(sessionId)) {
       if (!autoCreate) return null;
       const client = new SingleWhatsAppClient(sessionId, userId, this);
+      client.excludedContactIds = this.excludedContactIds;
       this.clients.set(sessionId, client);
     } else if (userId && !this.clients.get(sessionId).userId) {
       this.clients.get(sessionId).userId = userId;

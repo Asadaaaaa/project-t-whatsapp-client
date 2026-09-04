@@ -56,6 +56,14 @@ export class ReimbursementTestHandler {
 
     const chatTitle = chat?.name || chat?.formattedTitle || 'Direct Chat';
     const chatId = chat?.id?._serialized || msg.from;
+    const author = msg.author || msg.from;
+    const senderPhone = chat?.id?.user || author?.split?.('@')?.[0];
+
+    // Filter: Ignore excluded contacts/groups from Contact Exceptional config
+    if (this.singleClient.isContactExcluded(chatId, author, senderPhone)) {
+      this.sendLogs(`[ReimbursementTest] ⛔ Dilewati: Chat/Pengirim '${chatId}' masuk daftar Contact Exceptional.`);
+      return null;
+    }
 
     this.sendLogs(`\n================== [TEST REIMBURSE DETECTED] ==================`);
     this.sendLogs(`[ReimbursementTest] 🔍 Terdeteksi pesan dengan tag #reimburse!`);
@@ -688,9 +696,14 @@ export class ReimbursementTestHandler {
       }
     } catch (getChatsErr) {}
 
-    // Filter kandidat yang belum pernah diproses
+    // Filter kandidat yang belum pernah diproses dan bukan dari kontak yang dikecualikan
     const unhandledCandidates = candidateMessages.filter(msg => {
       const id = msg.id?._serialized || msg.id?.id || (typeof msg.id === 'string' ? msg.id : '');
+      const chatId = msg.from || msg.to || '';
+      const author = msg.author || '';
+      if (this.singleClient.isContactExcluded(chatId, author)) {
+        return false;
+      }
       return id && !this.processedMsgIds.has(id);
     });
 

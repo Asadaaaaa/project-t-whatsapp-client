@@ -21,6 +21,25 @@ export class SingleWhatsAppClient {
 
     this.syncService = new SyncService(this);
     this.messageHandler = new MessageHandler(this);
+    this.excludedContactIds = this.manager?.excludedContactIds || new Set();
+  }
+
+  isContactExcluded(chatId, senderId, phone) {
+    if (this.manager && typeof this.manager.isContactExcluded === 'function') {
+      return this.manager.isContactExcluded(chatId, senderId, phone);
+    }
+    if (!this.excludedContactIds || this.excludedContactIds.size === 0) return false;
+    const check = (val) => {
+      if (!val) return false;
+      const str = String(val).trim();
+      if (this.excludedContactIds.has(str)) return true;
+      if (str.includes('@')) {
+        const user = str.split('@')[0];
+        if (this.excludedContactIds.has(user)) return true;
+      }
+      return false;
+    };
+    return check(chatId) || check(senderId) || check(phone);
   }
 
   async notifySessionUpdate(status, phoneNumber = null) {

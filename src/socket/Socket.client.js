@@ -32,6 +32,13 @@ class SocketClient {
       if (this.app?.onSocketConnected) {
         this.app.onSocketConnected();
       }
+
+      // Sync Contact Exceptions from Controller
+      this.fetchContactExceptions().then((exceptions) => {
+        if (exceptions && this.app?.manager?.setContactExceptions) {
+          this.app.manager.setContactExceptions(exceptions);
+        }
+      }).catch(() => {});
     });
 
     this.socket.on('disconnect', (reason) => {
@@ -213,6 +220,15 @@ class SocketClient {
         }
       }
     });
+
+    // 8. Real-time Contact Exceptions update from Controller
+    this.socket.on('whatsapp:contact_exceptions_updated', (data) => {
+      const list = data?.excludedChatIds || [];
+      this.sendLogs(`[SocketClient] 📋 Received updated contact exceptions list (${list.length} items)`);
+      if (this.app?.manager?.setContactExceptions) {
+        this.app.manager.setContactExceptions(list);
+      }
+    });
   }
 
   /**
@@ -311,6 +327,28 @@ class SocketClient {
           resolve(response.data);
         } else {
           resolve(null);
+        }
+      });
+    });
+  }
+
+  /**
+   * Fetch active contact exceptions from Controller DB
+   */
+  async fetchContactExceptions() {
+    if (!this.socket || !this.isConnected) return null;
+
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        resolve([]);
+      }, 5000);
+
+      this.socket.emit('whatsapp:get_contact_exceptions', {}, (response) => {
+        clearTimeout(timer);
+        if (response && response.success && Array.isArray(response.data)) {
+          resolve(response.data);
+        } else {
+          resolve([]);
         }
       });
     });

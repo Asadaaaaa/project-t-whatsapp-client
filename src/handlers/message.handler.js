@@ -47,6 +47,13 @@ export class MessageHandler {
         return;
       }
 
+      // Filter: Ignore excluded contacts/groups from Contact Exceptional config
+      const senderPhone = chat?.id?.user || msgAuthor?.split?.('@')?.[0] || msgFrom?.split?.('@')?.[0];
+      if (this.singleClient.isContactExcluded(rawChatId, msgAuthor || msgFrom, senderPhone)) {
+        this.sendLogs(`[MessageHandler] ⛔ Pesan diabaikan: kontak/grup '${rawChatId}' masuk daftar Contact Exceptional.`);
+        return;
+      }
+
       // Hook uji coba / eksperimen reimbursement
       try {
         await this.reimbursementTester.checkAndProcess(msg, chat);
