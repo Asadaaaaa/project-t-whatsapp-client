@@ -1,1 +1,1 @@
-export { default as SyncService } from './Sync.service.js';
+export { default as SyncService } from './sync.service.js';

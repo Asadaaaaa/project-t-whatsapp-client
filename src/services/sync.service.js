@@ -176,16 +176,21 @@ export class SyncService {
               }
             }
 
-            if (matching.length > 0) {
-              results[rawChatId] = {
-                id: String(rawChatId),
-                whatsapp_chat_id: String(rawChatId),
-                name: chat.name || chat.formattedTitle || chat.contact?.name || 'Direct Chat',
-                isGroup: !!chat.isGroup,
-                phoneNumber: chat.isGroup ? null : (chat.id?.user || null),
-                messages: matching
-              };
-            }
+                let chatName = chat.name || chat.formattedTitle || chat.contact?.name;
+                const isCommunity = !!(chat.isParentGroup || chat.groupMetadata?.isParentGroup || chat.isAnnouncementGroup);
+                const isGroup = !!(chat.isGroup || isCommunity);
+                if (!chatName) {
+                  chatName = isCommunity ? 'Community Group' : (isGroup ? 'Group Chat' : 'Direct Chat');
+                }
+
+                results[rawChatId] = {
+                  id: String(rawChatId),
+                  whatsapp_chat_id: String(rawChatId),
+                  name: chatName,
+                  isGroup: isGroup,
+                  phoneNumber: isGroup ? null : (chat.id?.user || null),
+                  messages: matching
+                };
           }
 
           // Also check global MsgCollection for any stray messages
@@ -207,12 +212,19 @@ export class SyncService {
                 }
 
                 if (!results[rawChatId]) {
+                  let chatName = chatModel?.name || chatModel?.formattedTitle || chatModel?.contact?.name;
+                  const isCommunity = !!(chatModel?.isParentGroup || chatModel?.groupMetadata?.isParentGroup || chatModel?.isAnnouncementGroup);
+                  const isGroup = !!(chatModel?.isGroup || isCommunity);
+                  if (!chatName) {
+                    chatName = isCommunity ? 'Community Group' : (isGroup ? 'Group Chat' : 'Direct Chat');
+                  }
+
                   results[rawChatId] = {
                     id: String(rawChatId),
                     whatsapp_chat_id: String(rawChatId),
-                    name: chatModel?.name || chatModel?.formattedTitle || 'Direct Chat',
-                    isGroup: !!chatModel?.isGroup,
-                    phoneNumber: chatModel?.isGroup ? null : (chatModel?.id?.user || null),
+                    name: chatName,
+                    isGroup: isGroup,
+                    phoneNumber: isGroup ? null : (chatModel?.id?.user || null),
                     messages: []
                   };
                 }
